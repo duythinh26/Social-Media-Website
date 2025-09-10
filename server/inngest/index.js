@@ -1,5 +1,6 @@
 import { Inngest } from "inngest";
 import User from "../models/User.js";
+import Connection from "../models/Connection.js";
 
 // Create a client to send and receive events
 export const inngest = new Inngest({ id: "pingup-app" });
@@ -51,9 +52,72 @@ const syncUserDeletion = inngest.createFunction(
     { id: 'delete-user-with-clerk' },
     { event: 'clerk/user.deleted' },
     async ({ event }) => {
-        const { id} = event.data
+        const { id } = event.data
 
         await User.findByIdAndDelete(id)
+    }
+)
+
+// Inngest Function to send Reminder when a new connection request is added
+const sendNewConnectionRequestReminder = inngest.createFunction(
+    { id: "send-new-connection-request-reminder" },
+    { event: "app/connection-request" },
+    async ({ event, step }) => {
+        const { connectionId } = event.data;
+
+        // Send email immediately when a new connection request is created
+        await step.run('send-connection-request-mail', async () => {
+            const connection = await Connection.findById(connectionId).populate('from_user_id to_user_id');
+
+            const subject = `👋 Lời mời kết bạn mới`;
+            const body = `
+                <div style="font-family: Arial, sans-serif; padding: 20px;">
+                    <h2>Xin chào ${connection.to_user_id.full_name},</h2>
+                    <p>Bạn có một lời mời kết bạn từ ${connection.from_user_id.full_name} - @${connection.from_user_id.username}</p>
+                    <p>Nhấn <a href="${process.env.CLIENT_URL}/connections" style="color: #10b981;">vào đây</a> để chấp nhận hoặc hủy kết bạn.</p>
+                    <br/>
+                    <p>Cảm ơn, <br/>PingUp - Hãy giữ liên lạc</p>
+                </div>
+            `;
+
+            await sendEmail({
+                to: connection.to_user_id.email,
+                subject,
+                body
+            });
+        });
+
+        // Wait for 24 hours before sending a reminder email
+        const in24Hours = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await step.sleepUntil('wait-for-24-hours', in24Hours);
+
+        // Send reminder email if the connection request is still pending
+        await step.run('send-connection-request-reminder', async () => {
+            const connection = await Connection.findById(connectionId).populate("from_user_id to_user_id");
+
+            if (connection.status === "accepted") {
+                return { message: "Đã chấp nhận" };
+            }
+
+            const subject = `👋 Lời mời kết bạn mới`;
+            const body = `
+                <div style="font-family: Arial, sans-serif; padding: 20px;">
+                    <h2>Xin chào ${connection.to_user_id.full_name},</h2>
+                    <p>Bạn có một lời mời kết bạn từ ${connection.from_user_id.full_name} - @${connection.from_user_id.username}</p>
+                    <p>Nhấn <a href="${process.env.CLIENT_URL}/connections" style="color: #10b981;">vào đây</a> để chấp nhận hoặc hủy kết bạn.</p>
+                    <br/>
+                    <p>Cảm ơn, <br/>PingUp - Hãy giữ liên lạc</p>
+                </div>
+            `;
+
+            await sendEmail({
+                to: connection.to_user_id.email,
+                subject,
+                body
+            });
+
+            return { message: "Thông báo đã gửi!" };
+        });
     }
 )
 
@@ -61,5 +125,6 @@ const syncUserDeletion = inngest.createFunction(
 export const functions = [
     syncUserCreation,
     syncUserUpdation,
-    syncUserDeletion
+    syncUserDeletion,
+    sendNewConnectionRequestReminder
 ];
